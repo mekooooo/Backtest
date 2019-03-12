@@ -11,6 +11,8 @@ from scipy import io
 from progressbar import ProgressBar
 import warnings
 
+warnings.simplefilter('ignore', RuntimeWarning)
+
 class Backtest:
     
     def __init__(self, temp_data=False):
@@ -209,7 +211,7 @@ class Backtest:
         
         Notes
         -----
-            - For this stage, risk level can be recover from 2 to 0. But
+            - For this stage, risk level can be recovered from 2 to 0. But
               liquidity limit and turnover limit can prevent the backtest
               from trading too large volume.
             
@@ -217,40 +219,43 @@ class Backtest:
               background color, which stands for risk level that day. However,
               the vertical lines are not quite consistent with X axis.
         """
-        self.factor[self.Check==0] = -10000
+        res = {}
+        
+        self.factor[self.check==0] = -10
         weights = np.zeros(self.factor.shape)
         for i in range(len(self.dates)):
             if i < 1:
                 continue
             top = np.argpartition(self.factor[i-1,:], -top_num)[-top_num:]
-            weights[i,top] = mv[i-1,top] if mv_weighted else 1
+            weights[i,top] = self.mv[i-1,top] if mv_weighted else 1
         weights /= np.sum(weights, axis=1).reshape([-1,1])
         weights[np.isnan(weights)] = 0
 
         year_point = np.where(pd.Series([x.year for x in
                                          self.dates]).diff() == 1)[0]
+        res['year_point'] = year_point
         risk_level = np.zeros(len(self.dates))
         
         # Pure trading alpha and risk level
         if risk_control: 
-            f_pnl = []
-            p_ratio = []
+            f_pnl = np.zeros(len(self.dates))
+            p_ratio = np.zeros(len(self.dates))
             holding = np.zeros(self.factor.shape)
             future_holding = np.zeros(len(self.dates))
             cash_lend = 0
             topV = init_cap
             DD = np.zeros(len(self.dates))
-            maxDD = 0
+            turnover = np.zeros(len(self.dates))
             cash = np.zeros(len(self.dates))
-            cash[0] = init_cap
             aum = np.zeros(len(self.dates))
-            aum[0] = init_cap
             pb = ProgressBar()
             for i in pb(range(len(self.dates))):
             
                 if i < 1:
-                    f_pnl.append(0)
-                    p_ratio.append(0)
+                    f_pnl[i] = 0.0
+                    p_ratio[i] = 0.0
+                    cash[i] = init_cap
+                    aum[i] = init_cap
                     continue
         
                 cash[i] = cash[i-1]
@@ -401,49 +406,62 @@ class Backtest:
                              - self.csi500[i])/2)) + (200*future_holding[i-1]
                             *(self.csi500[i-1] - self.csi500[i]))
                 cash[i] += f_dly_pnl
-                f_pnl.append(f_dly_pnl)
+                f_pnl[i] = f_dly_pnl
                 
                 holding_v = holding[i,:] * self.close_fill[i,:]
                 holding_v[np.isnan(self.close_fill[i,:])] = 0
-                p_ratio.append(holding_v.sum() / aum[i])
                 
-                cash[i] -= aum[i-1]* 0.0001
+                cash[i] -= aum[i-1]* mngm_fee
                 
                 aum[i] = (holding_v.sum() + cash[i] - cash_lend) 
-                
+                p_ratio[i] = holding_v.sum() / aum[i]
+
                 # Risk level for tommorrow
                 if i in year_point:
                     topV = 0
-                    maxDD = 0
                 if aum[i] > topV:
                     topV = aum[i]
                 else:
                     DD[i] = aum[i] / topV - 1
-                    if DD[i] < maxDD:
-                        maxDD = DD[i]
-            
-            temp_DD = DD.copy()
-            temp_aum = aum.copy()
-            temp_hocc = np.array(p_ratio)
+
+                            
+                holding_v = np.sum(np.abs(reb_value))
+                temp = aum[i]*pos_ratio
+                if temp > 0:
+                    turnover[i] = holding_v / temp
+                elif holding_v == 0:
+                    turnover[i] = 0.0
+                else:
+                    turnover[i] = 1.0
+                    
+            res['r_aum'] = aum
+            res['r_turnover'] = turnover
+            res['r_position'] = p_ratio
+            res['r_cash'] = cash
+            res['r_f_pnl'] = f_pnl
+            res['r_f_holding'] = future_holding
+            res['r_drawdown'] = DD
+            res['risk_level'] = risk_level
+            res['r_ret'] = np.r_[0, aum[1:]/aum[:-1] - 1]
         
         # Real trading
-        f_pnl = []
-        p_ratio = []
+        f_pnl = np.zeros(len(self.dates))
+        p_ratio = np.zeros(len(self.dates))
         holding = np.zeros(self.factor.shape)
         future_holding = np.zeros(len(self.dates))
         cash_lend = 0
         topV = init_cap
         DD = np.zeros(len(self.dates))
-        maxDD = 0
+        turnover = np.zeros(len(self.dates))
         cash = np.zeros(len(self.dates))
-        cash[0] = init_cap
         aum = np.zeros(len(self.dates))
-        aum[0] = init_cap
         pb = ProgressBar()
         for i in pb(range(len(self.dates))):
             if i < 1:
-                f_pnl.append(0)
-                p_ratio.append(0)
+                f_pnl[i] = 0.0
+                p_ratio[i] = 0.0
+                cash[i] = init_cap
+                aum[i] = init_cap
                 continue
     
             cash[i] = cash[i-1]
@@ -587,475 +605,178 @@ class Backtest:
                          - self.csi500[i])/2)) + (200*future_holding[i-1]
                         *(self.csi500[i-1] - self.csi500[i]))
             cash[i] += f_dly_pnl
-            f_pnl.append(f_dly_pnl)
+            f_pnl[i] = f_dly_pnl
             
             holding_v = holding[i,:] * self.close_fill[i,:]
             holding_v[np.isnan(self.close_fill[i,:])] = 0
-            p_ratio.append(holding_v.sum() / aum[i])
             
             cash[i] -= aum[i-1] * mngm_fee
             
             aum[i] = (holding_v.sum() + cash[i] - cash_lend) 
-            
+            p_ratio[i] = holding_v.sum() / aum[i]
+
             # Risk level for tommorrow
             if i in year_point:
                 topV = 0
-                maxDD = 0
             if aum[i] > topV:
                 topV = aum[i]
             else:
                 DD[i] = aum[i] / topV - 1
-                if DD[i] < maxDD:
-                    maxDD = DD[i]
-        
-        dps = pd.Series(aum,index=pd.to_datetime(self.dates))
-        temp_dps = pd.Series(temp_aum,index=pd.to_datetime(self.dates))
-        ax = (dps / dps[0]).plot()
-        (temp_dps / temp_dps[0]).plot()
-        ax.pcolorfast(ax.get_xlim(), ax.get_ylim(),
-                      risk_level[np.newaxis], cmap='Reds', alpha=0.2)
-        
             
-            
-
-if __name__ == '__main__':
-    
-    Factor = pd.read_csv('D:/Projects/Technical/Factors/RSI_bot_10_22_5.csv',
-                         index_col = 0, header = 0, parse_dates=True)
-    temp = Backtest(temp_data=True)
-    temp.TargetOn(Factor, scale_method='normalize')        
-    temp.Backtest(w_limit=0.05, risk_control=True)
-    
-    
-
-    #%% __init__
-    data_dir = './temp_data/'
-    Dates = pd.to_datetime([str(x[0][0]) for x in io.loadmat(f'{data_dir}date.mat').popitem()[1]])
-    Tickers = [str(x[0][0]) for x in io.loadmat(f'{data_dir}ticker.mat').popitem()[1]]
-    
-    StartDate = Dates[0]
-    EndDate = Dates[-1]
-    
-    # backtest
-    CSI500 = pd.Series(io.loadmat(f'{data_dir}csi500_close.mat').popitem()[1].reshape([-1]),index=Dates)
-    CSI500_open = pd.Series(io.loadmat(f'{data_dir}csi500_open.mat').popitem()[1].reshape([-1]),index=Dates)
-    Close = pd.DataFrame(io.loadmat(f'{data_dir}data_close_price.mat').popitem()[1].T, index=Dates, columns=Tickers)
-    VWAP = pd.DataFrame(io.loadmat(f'{data_dir}data_vwap_price.mat').popitem()[1].T, index=Dates, columns=Tickers)
-    Check = pd.DataFrame(io.loadmat(f'{data_dir}data_tickercheck.mat').popitem()[1].T, index=Dates, columns=Tickers)
-    MV = pd.DataFrame(io.loadmat(f'{data_dir}data_mv.mat').popitem()[1].T, index=Dates, columns=Tickers)
-    
-    Close[Close == 0] = np.nan
-    VWAP[VWAP == 0] = np.nan
-    CSI500[CSI500 == 0] = np.nan
-    CSI500_open[CSI500_open == 0] = np.nan
-    Close_fill = Close.ffill(axis=0)
-    High = io.loadmat(f'{data_dir}data_high_price.mat').popitem()[1].T
-    Low = io.loadmat(f'{data_dir}data_low_price.mat').popitem()[1].T
-    cant = High == Low
-    CantBut = cant * (Low / Close_fill.shift(axis=1) - 1 > 0.09)
-    CantSell = cant * (High / Close_fill.shift(axis=1) - 1 < -0.09)
-#    Close_fill = Close_fill.values
-#    Close = Close.values
-#    VWAP = VWAP.values
-    CSI500 = CSI500.ffill().bfill()
-    CSI500_open = CSI500_open.ffill().bfill()
-#    MV_weight = MV / np.sum(MV, axis=0)
-    
-    fturn = pd.DataFrame(io.loadmat(f'{data_dir}data_fturn.mat').popitem()[1].T / 100, index=Dates, columns=Tickers)
-    fmv = pd.DataFrame(io.loadmat(f'{data_dir}data_fmv.mat').popitem()[1].T, index=Dates, columns=Tickers)
-    Liq_top = (fturn * fmv).rolling(5,axis=0).mean()
-    Liq_top[pd.isnull(Liq_top)] = (fturn * fmv)[pd.isnull(Liq_top)]
-    
-    #%% config
-    Factor = pd.read_csv('D:/Projects/Technical/Factors/RSI_bot_10_22_5.csv',
-                         index_col = 0, header = 0, parse_dates=True)
-    
-    adjust_time = False
-    scale_method = 'normalize'
-    # input to config
-    start_date = Factor.index[0]
-    end_date = Factor.index[-1]
-    
-    if start_date != StartDate:
-        SDate = start_date if start_date > StartDate else StartDate
-        warnings.warn(f'''Start date of input factor is {start_date.date()},
-                          but start date of data is {StartDate.date()}.''')
-        adjust_time = True
-    else:
-        SDate = start_date
-        
-    if end_date != EndDate:
-        EDate = end_date if end_date < EndDate else EndDate
-        warnings.warn(f'''End date of input factor is {end_date.date()},
-                          but end date of data is {EndDate.date()}.''')
-        adjust_time = True
-    else:
-        EDate = end_date
-    
-    csi500 = CSI500[SDate:EDate].values
-    csi500_open = CSI500_open[SDate:EDate].values
-    close = Close[SDate:EDate].values
-    vwap = VWAP[SDate:EDate].values
-    check = Check[SDate:EDate].values
-    mv = MV[SDate:EDate].values
-    cant_buy = CantBut[SDate:EDate].values
-    cant_sell = CantSell[SDate:EDate].values
-    close_fill = Close_fill[SDate:EDate].values
-    liq_top = Liq_top[SDate:EDate].values
-    dates = CSI500[SDate:EDate].index
-    
-    # scale
-    if scale_method == 'standardize':
-        factor = Factor.sub(Factor.mean(axis=1), axis=0).div(Factor.std(axis=1), axis=0)
-    elif scale_method == 'normalize':
-        temp_min = Factor.min(axis=1)
-        factor = Factor.sub(temp_min, axis=0).div(Factor.max(axis=1)-temp_min, axis=0)
-    factor = factor.values
-    
-    #%% backtest
-    factor[Check==0] = -10000
-    weights = np.zeros(factor.shape)
-    for i in range(factor.shape[0]):
-        if i < 1:
-            continue
-        top = np.argpartition(factor[i-1,:], -50)[-50:]
-        weights[i,top] = 1#mv[top,i-1]
-    weights /= np.sum(weights, axis=1).reshape([-1,1])
-    weights[np.isnan(weights)] = 0
-    
-    bm = CSI500 / CSI500.shift(1)
-    cash_total = 100000000
-
-    year_point = np.where(pd.Series([x.year for x in dates]).diff() == 1)[0]
-
-    occ = []
-    hocc = []
-    holding = np.zeros(close.shape)
-    future_holding = np.zeros(close.shape[0])
-    cash_lend = 0
-    topV = cash_total
-    DD = np.zeros(close.shape[0])
-    maxDD = 0
-    risk_level = np.zeros(close.shape[0])
-    cash = np.zeros(close.shape[0])
-    cash[0] = cash_total
-    aum = np.zeros(close.shape[0])
-    aum[0] = cash_total
-    model_line = aum.copy()
-    NV_today = np.zeros(close.shape[1])
-    pb = ProgressBar()
-    for i in pb(range(close.shape[0])):
-    
-        if i < 1:
-            occ.append(0)
-            hocc.append(0)
-            continue
-
-        cash[i] = cash[i-1]
-        holding[i,:] = holding[i-1,:]
-#        if i == 2318:
-#            break
-        # lend
-        if cash[i] < 0:
-            cash_lend -= cash[i]
-            cash[i] = 0
-        
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
+            holding_v = np.sum(np.abs(reb_value))
+            temp = aum[i]*pos_ratio
+            if temp > 0:
+                turnover[i] = holding_v / temp
+            elif holding_v == 0:
+                turnover[i] = 0.0
             else:
-                cash[i] -= cash_lend
-                cash_lend = 0
+                turnover[i] = 1.0
+            
+            
+        res['aum'] = aum
+        res['turnover'] = turnover
+        res['position'] = p_ratio
+        res['cash'] = cash
+        res['f_pnl'] = f_pnl
+        res['f_holding'] = future_holding
+        res['drawdown'] = DD
+        res['ret'] = np.r_[0, aum[1:]/aum[:-1] - 1]
+        self.backtest_res = res
+        return res 
         
-        if risk_level[i-1] == 0:
-            risk_level[i] = 1*(DD[i-1] <= -0.02) + 1*(DD[i-1] <= -0.04)
+        
+    @staticmethod
+    def AnnRet(aum, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(aum)-1]
+            res = []
+            for i in range(len(y_point)-1):
+                temp = aum[y_point[i+1]]/aum[y_point[i]]
+                res.append((temp**(1/(y_point[i+1] - y_point[i])))**252-1)
+            res.append(((aum[-1]/aum[0])**(1/len(aum)))**252-1)
+            return np.array(res)
+        
         else:
-            risk_level[i] = risk_level[i-1] - (risk_level[i-1]-1)*(DD[i-1] >= -0.03) - 1*(DD[i-1] >= -0.01) + (2-risk_level[i-1])*(DD[i-1] <= -0.04)
-        
-        weight_v = weights[i,:]
-        liq_mask = liq_top[i,:]/(0.8*aum[i-1])
-        liq_mask[~(liq_mask < 0.05)] = 0.05
-        liq_mask[liq_mask == 0] = 0.05
-        balance_mask = weight_v > liq_mask
-        if balance_mask.any():
-            remain = (weight_v[balance_mask] - liq_mask[balance_mask]).sum()
-            weight_v[balance_mask] = liq_mask[balance_mask]
-            weight_v[~balance_mask] *= (remain / weight_v[~balance_mask].sum() + 1)
-        balance_mask = weight_v > liq_mask
-        if balance_mask.any():
-            remain = (weight_v[balance_mask] - liq_mask[balance_mask]).sum()
-            weight_v[balance_mask] = liq_mask[balance_mask]
-            weight_v[~balance_mask] *= (remain / weight_v[~balance_mask].sum() + 1)
-        weight_v /= weight_v.sum()
-        
-        h_yes = holding[i-1,:] * close_fill[i-1,:]
-        h_yes[np.isnan(close_fill[i-1,:])] = 0
-        build_speed = 0.8
-        reb_value = build_speed*aum[i-1]*weight_v - h_yes
-        reb_value[reb_value < 0] *= ~cant_sell[i,reb_value < 0]
-        reb_value[reb_value > 0] *= ~cant_buy[i,reb_value > 0]
-
-        liq_mask = np.abs(reb_value) >= liq_top[i-1,:] * 0.1
-        if np.sum(liq_mask) > 0:
-            reb_value[liq_mask] = np.sign(reb_value[liq_mask])*liq_top[i-1,liq_mask]*0.1
-        
-        turn_mask = np.abs(reb_value / h_yes) < 0.1
-        reb_value[turn_mask] = 0
-        
-        future_holding[i] = np.round((reb_value+h_yes).sum() / csi500[i-1] / 200)
-        
-        reb_buy_mask = (reb_value > 0) * (h_yes > 0)
-        reb_sell_mask = (reb_value < 0) * (reb_value + h_yes > 0)
-        all_buy_mask = (reb_value > 0) * (h_yes == 0)
-        all_sell_mask = (reb_value < 0) * (reb_value + h_yes == 0)
-        
-#        cash_line = 0.15 * aum[i-1]
-        
-        trn = []
-        
-        # rebalance sell
-        if np.sum(reb_sell_mask) > 0:
-            d_rb_s = np.round(reb_value[reb_sell_mask] / close[i-1,reb_sell_mask],-2)
-            d_rb_s[np.isnan(d_rb_s)] = 0
-            holding[i,reb_sell_mask] += d_rb_s
-            cash[i] += np.nansum(-d_rb_s * vwap[i,reb_sell_mask]) * (1-0.0002-0.001) # 72984458            
-
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
-            else:
-                cash[i] -= cash_lend
-                cash_lend = 0
-        
-        # rebalance buy
-        if np.sum(reb_buy_mask) > 0 and cash[i] > 0:
-            reb_value[reb_buy_mask] /= ((np.sum(reb_value[reb_buy_mask]) / (cash[i])) if np.sum(reb_value[reb_buy_mask]) > (cash[i]) else 1)
-            d_rb_b = np.round(reb_value[reb_buy_mask] / close[i-1,reb_buy_mask],-2)
-            d_rb_b[np.isnan(d_rb_b)] = 0
-            holding[i,reb_buy_mask] += d_rb_b
-            cash[i] -= np.nansum(d_rb_b * vwap[i,reb_buy_mask]) * (1+0.0002)
-            
-        # lend
-        if cash[i] < 0:
-            cash_lend -= cash[i]
-            cash[i] = 0
-        
-        # sell
-        if np.sum(all_sell_mask) > 0:
-            cash[i] += np.nansum(holding[i,all_sell_mask] * vwap[i,all_sell_mask]) * (1-0.0002-0.001) # 111391565
-            holding[i,all_sell_mask] = 0
-            
-
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
-            else:
-                cash[i] -= cash_lend
-                cash_lend = 0
-        
-        # buy
-        if np.sum(all_buy_mask) > 0 and cash[i] > 0:
-            reb_value[all_buy_mask] /= ((np.sum(reb_value[all_buy_mask]) / (cash[i])) if np.sum(reb_value[all_buy_mask]) > (cash[i]) else 1)
-            d_all_b = np.floor(reb_value[all_buy_mask] / vwap[i-1,all_buy_mask]/100)*100
-            d_all_b[np.isnan(d_all_b)] = 0
-            holding[i,all_buy_mask] = d_all_b
-            cash[i] -= np.nansum(d_all_b * vwap[i,all_buy_mask]) * (1+0.0002) # 61828839
-        
+            return ((aum[-1]/aum[0])**(1/len(aum)))**252-1
     
-        d_f = future_holding[i] - future_holding[i-1]
-        cash[i] += (200*d_f*((csi500_open[i] + csi500[i])/2 - csi500[i]))
-        cash[i] += (200*future_holding[i-1]*(csi500[i-1] - csi500[i]))
+    @staticmethod
+    def TotRet(aum, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(aum)-1]
+            res = []
+            for i in range(len(y_point)-1):
+                res.append(aum[y_point[i+1]]/aum[y_point[i]] - 1)
+            res.append(aum[-1]/aum[0] - 1)
+            return np.array(res)
         
-        holding_v = holding[i,:] * close_fill[i,:]
-        holding_v[np.isnan(close_fill[i,:])] = 0
-        cash[i] -= aum[i-1]* 0.0001
-        aum[i] = (holding_v.sum() + cash[i] - cash_lend) 
-        occ.append(200*d_f*((csi500_open[i] + csi500[i])/2 - csi500[i])+200*future_holding[i-1]*(csi500[i-1] - csi500[i]))
-        hocc.append(holding_v.sum() / aum[i])
-        if i in year_point:
-            topV = 0
-            maxDD = 0
-        if aum[i] > topV:
-            topV = aum[i]
         else:
-            DD[i] = aum[i] / topV - 1
-            if DD[i] < maxDD:
-                maxDD = DD[i]
+            return aum[-1]/aum[0] - 1
     
-    temp_DD = DD.copy()
-    temp_aum = aum.copy()
-    temp_hocc = np.array(hocc)
-
-    occ = []
-    hocc = []
-    holding = np.zeros(close.shape)
-    future_holding = np.zeros(close.shape[0])
-    cash_lend = 0
-    topV = cash_total
-    DD = np.zeros(close.shape[0])
-    maxDD2 = 0
-    cash = np.zeros(close.shape[0])
-    cash[0] = cash_total
-    aum = np.zeros(close.shape[0])
-    aum[0] = cash_total
-    NV_today = np.zeros(close.shape[1])
-    pb = ProgressBar()
-    for i in pb(range(close.shape[0])):
-        if i < 1:
-            occ.append(0)
-            hocc.append(0)
-            continue
-
-        cash[i] = cash[i-1]
-        holding[i,:] = holding[i-1,:]
-#        if i == 1688:
-#            break
-        # lend
-        if cash[i] < 0:
-            cash_lend -= cash[i]
-            cash[i] = 0
+    @staticmethod
+    def Volatility(ret, year_point=None):
+        ann_f = 252**0.5
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(ret)]
+            res = []
+            for i in range(len(y_point)-1):
+                res.append(np.std(ret[y_point[i]:y_point[i+1]])*ann_f)
+            res.append(np.nanstd(ret)*ann_f)
+            return np.array(res)
         
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
-            else:
-                cash[i] -= cash_lend
-                cash_lend = 0
-        
-        weight_v = weights[i,:]
-        liq_mask = liq_top[i,:]/(0.8*aum[i-1]*(1-0.5*risk_level[i]))
-        liq_mask[~(liq_mask < 0.05)] = 0.05
-        liq_mask[liq_mask == 0] = 0.05
-        balance_mask = weight_v > liq_mask
-        if balance_mask.any():
-            remain = (weight_v[balance_mask] - liq_mask[balance_mask]).sum()
-            weight_v[balance_mask] = liq_mask[balance_mask]
-            weight_v[~balance_mask] *= (remain / weight_v[~balance_mask].sum() + 1)
-        balance_mask = weight_v > liq_mask
-        if balance_mask.any():
-            remain = (weight_v[balance_mask] - liq_mask[balance_mask]).sum()
-            weight_v[balance_mask] = liq_mask[balance_mask]
-            weight_v[~balance_mask] *= (remain / weight_v[~balance_mask].sum() + 1)
-        weight_v /= weight_v.sum()
-        
-        h_yes = holding[i-1,:] * close_fill[i-1,:]
-        h_yes[np.isnan(close_fill[i-1,:])] = 0
-        build_speed = 0.8
-        reb_value = build_speed*aum[i-1]*weight_v*(1-0.5*risk_level[i]) - h_yes
-        reb_value[reb_value < 0] *= ~cant_sell[i,reb_value < 0]
-        reb_value[reb_value > 0] *= ~cant_buy[i,reb_value > 0]
-
-        liq_mask = np.abs(reb_value) >= liq_top[i-1,:] * 0.1
-        if np.sum(liq_mask) > 0:
-            reb_value[liq_mask] = np.sign(reb_value[liq_mask])*liq_top[i-1,liq_mask]*0.1
-        
-        turn_mask = np.abs(reb_value / h_yes) < 0.1
-        reb_value[turn_mask] = 0
-        
-        future_holding[i] = np.round((reb_value+h_yes).sum() / csi500[i-1] / 200)
-        
-        reb_buy_mask = (reb_value > 0) * (h_yes > 0)
-        reb_sell_mask = (reb_value < 0) * (reb_value + h_yes > 0)
-        all_buy_mask = (reb_value > 0) * (h_yes == 0)
-        all_sell_mask = (reb_value < 0) * (reb_value + h_yes == 0)
-        
-#        cash_line = 0.15 * aum[i-1]
-        
-        trn = []
-        
-        # rebalance sell
-        if np.sum(reb_sell_mask) > 0:
-            d_rb_s = np.round(reb_value[reb_sell_mask] / close[i-1,reb_sell_mask],-2)
-            d_rb_s[np.isnan(d_rb_s)] = 0
-            holding[i,reb_sell_mask] += d_rb_s
-            cash[i] += np.nansum(-d_rb_s * vwap[i,reb_sell_mask]) * (1-0.0002-0.001) # 72984458
-            
-
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
-            else:
-                cash[i] -= cash_lend
-                cash_lend = 0
-        
-        # rebalance buy
-        if np.sum(reb_buy_mask) > 0 and cash[i] > 0:
-            reb_value[reb_buy_mask] /= ((np.sum(reb_value[reb_buy_mask]) / (cash[i])) if np.sum(reb_value[reb_buy_mask]) > (cash[i]) else 1)
-            d_rb_b = np.round(reb_value[reb_buy_mask] / close[i-1,reb_buy_mask],-2)
-            d_rb_b[np.isnan(d_rb_b)] = 0
-            holding[i,reb_buy_mask] += d_rb_b
-            cash[i] -= np.nansum(d_rb_b * vwap[i,reb_buy_mask]) * (1+0.0002)
-            
-        # lend
-        if cash[i] < 0:
-            cash_lend -= cash[i]
-            cash[i] = 0
-        
-        # sell
-        if np.sum(all_sell_mask) > 0:
-            cash[i] += np.nansum(holding[i,all_sell_mask] * vwap[i,all_sell_mask]) * (1-0.0002-0.001) # 111391565
-            holding[i,all_sell_mask] = 0
-            
-
-        # repay
-        if cash[i] > 0 and cash_lend > 0:
-            if cash[i] < cash_lend:
-                cash_lend -= cash[i]
-                cash[i] = 0
-            else:
-                cash[i] -= cash_lend
-                cash_lend = 0
-        
-        # buy
-        if np.sum(all_buy_mask) > 0 and cash[i] > 0:
-            reb_value[all_buy_mask] /= ((np.sum(reb_value[all_buy_mask]) / (cash[i])) if np.sum(reb_value[all_buy_mask]) > (cash[i]) else 1)
-            d_all_b = np.floor(reb_value[all_buy_mask] / vwap[i-1,all_buy_mask]/100)*100
-            d_all_b[np.isnan(d_all_b)] = 0
-            holding[i,all_buy_mask] = d_all_b
-            cash[i] -= np.nansum(d_all_b * vwap[i,all_buy_mask]) * (1+0.0002) # 61828839
-        
-    
-        d_f = future_holding[i] - future_holding[i-1]
-        cash[i] += (200*d_f*((csi500_open[i] + csi500[i])/2 - csi500[i]))
-        cash[i] += (200*future_holding[i-1]*(csi500[i-1] - csi500[i]))
-        
-        holding_v = holding[i,:] * close_fill[i,:]
-        holding_v[np.isnan(close_fill[i,:])] = 0
-        cash[i] -= aum[i-1]* 0.0001
-        aum[i] = (holding_v.sum() + cash[i] - cash_lend) 
-        occ.append(200*d_f*((csi500_open[i] + csi500[i])/2 - csi500[i])+200*future_holding[i-1]*(csi500[i-1] - csi500[i]))
-        hocc.append(holding_v.sum() / aum[i])
-        if i in year_point:
-            topV = 0
-            maxDD2 = 0
-        if aum[i] > topV:
-            topV = aum[i]
         else:
-            DD[i] = aum[i] / topV - 1
-            if DD[i] < maxDD2:
-                maxDD2 = DD[i]
+            return np.nanstd(ret)*ann_f
+    
+    @staticmethod
+    def WinRate(ret, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(ret)]
+            res = []
+            for i in range(len(y_point)-1):
+                res.append(np.sum(ret[y_point[i]:y_point[i+1]]>0)/
+                           (y_point[i+1]-y_point[i]))
+            res.append(np.sum(ret>0)/len(ret))
+            return np.array(res)
         
+        else:
+            return np.sum(ret>0)/len(ret)
     
-    dps = pd.Series(aum,index=pd.to_datetime(dates))
-    temp_dps = pd.Series(temp_aum,index=pd.to_datetime(dates))
-    ax = (dps / dps[0]).plot()
-    (temp_dps / temp_dps[0]).plot()
-    ax.pcolorfast(ax.get_xlim(), ax.get_ylim(),
-                  risk_level[np.newaxis], cmap='Reds', alpha=0.2)
+    @staticmethod
+    def WinLossRatio(ret, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(ret)]
+            res = []
+            for i in range(len(y_point)-1):
+                temp_ret = ret[y_point[i]:y_point[i+1]]
+                win = np.mean(temp_ret[temp_ret>0])
+                loss = np.abs(np.mean(temp_ret[temp_ret<0]))
+                res.append(win/loss if loss > 0 else 100)
+            res.append(np.mean(ret[ret>0])/np.abs(np.mean(ret[ret<0])))
+            return np.array(res)
+        
+        else:
+            return np.mean(ret[ret>0])/np.abs(np.mean(ret[ret<0]))
+            
+    @staticmethod
+    def MaxDrawDown(drawdown, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(drawdown)]
+            res = []
+            for i in range(len(y_point)-1):
+                res.append(np.min(drawdown[y_point[i]:y_point[i+1]]))
+            res.append(np.min(drawdown))
+            return np.array(res)
+        
+        else:
+            return np.min(drawdown)
     
-    
-    
-
-
-
+    @staticmethod
+    def ROT(ret, turnover, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(ret)]
+            res = []
+            for i in range(len(y_point)-1):
+                s_ret = np.sum(ret[y_point[i]:y_point[i+1]])
+                s_trn = np.sum(turnover[y_point[i]:y_point[i+1]])
+                res.append(s_ret/s_trn * 1e4 if s_trn > 0 else 0)
+            res.append(np.sum(ret)/np.sum(turnover) * 1e4)
+            return np.array(res)
+        
+        else:
+            return np.sum(ret) / np.sum(turnover) * 1e4
+        
+    def Summary(self, res=None, plot=True):
+        
+        if res is None:
+            res = self.backtest_res
+        
+        year_point = res['year_point']
+        ann_ret = self.AnnRet(res['aum'], year_point)
+        tot_ret = self.TotRet(res['aum'], year_point)
+        vol = self.Volatility(res['ret'], year_point)
+        win_rate = self.WinRate(res['ret'], year_point)
+        win_loss = self.WinLossRatio(res['ret'], year_point)
+        max_dd = self.MaxDrawDown(res['drawdown'], year_point)
+        sharpe_r = ann_ret / vol
+        sterling = ann_ret / -max_dd
+        rot = self.ROT(res['ret'], res['turnover'], year_point)
+        
+        index_l = [x.year for x in self.dates[np.r_[0,year_point]]]+['Overall']
+        col_l = ['AnnualReturn', 'TotalReturn', 'Volatility', 'WinRate',
+                 'Win/Loss', 'MaxDrawDown', 'SharpeRatio', 'SterlingRatio',
+                 'Return/Turnover']
+        summary = pd.DataFrame(np.c_[ann_ret, tot_ret, vol, win_rate,
+                                     win_loss, max_dd, sharpe_r, sterling,
+                                     rot],
+                               index=index_l, columns=col_l)
+        
+        if plot:
+            NAV = pd.Series(res['aum'],index=pd.to_datetime(self.dates))
+            (NAV / NAV[0]).plot()
+            if 'risk_level' in res:
+                rNAV = pd.Series(res['r_aum'],index=pd.to_datetime(self.dates))
+                ax = (rNAV / rNAV[0]).plot()
+                ax.pcolorfast(ax.get_xlim(), ax.get_ylim(),
+                              res['risk_level'][np.newaxis],
+                              cmap='Reds', alpha=0.2)
+        return summary
 
