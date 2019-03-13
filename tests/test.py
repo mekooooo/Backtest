@@ -22,4 +22,4 @@ if __name__ == '__main__':
     temp = Backtest(temp_data=True)
     temp.TargetOn(Factor, scale_method='standardize')        
     result = temp.Backtest(w_limit=0.05, risk_control=True)
-    summary = temp.summary(result)
+    summary = temp.Summary(result)
