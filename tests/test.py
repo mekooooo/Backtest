@@ -21,4 +21,5 @@ if __name__ == '__main__':
                          index_col = 0, header = 0, parse_dates=True)
     temp = Backtest(temp_data=True)
     temp.TargetOn(Factor, scale_method='standardize')        
-    temp.Backtest(w_limit=0.05, risk_control=True)
+    result = temp.Backtest(w_limit=0.05, risk_control=True)
+    summary = temp.Summary(result)
