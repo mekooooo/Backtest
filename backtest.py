@@ -16,7 +16,36 @@ warnings.simplefilter('ignore', RuntimeWarning)
 class Backtest:
     
     def __init__(self, temp_data=False):
+        """
+        Initialize the class by importing below data,
+            - Dates
+            - Tickers
+            - CSI500 Close
+            - CSI500 Open
+            - Close
+            - High
+            - Low
+            - VWAP
+            - Market Value
+            - Check Matrix
+            - Free Turnover
+            - Free Market Value
         
+        Parameters
+        ----------
+        temp_data : boolean, indicates whether importing data from temporary
+                    data directory.
+        
+        Notes
+        -----
+            - CSI500 Open is used for futures trading, High and Low are used
+              to indicate whether the stock can be longed this day.
+            
+            - At the present stage, data are imported from .mat files.
+            
+            - The Check matrix can prevent the factor from buying low value
+              stocks.
+        """
         data_dir = './temp_data/' if temp_data else './Data/'
         self.data_dir = data_dir
         if temp_data:
@@ -49,7 +78,8 @@ class Backtest:
             
             self.Close[self.Close == 0] = np.nan
             self.VWAP[self.VWAP == 0] = np.nan
-            self.Close_fill = self.Close.ffill(axis=0) 
+            self.Close_fill = self.Close.ffill(axis=0)
+            self.Ret = self.Close_fill/self.Close_fill.shift(axis=0)
             CSI500[CSI500 == 0] = np.nan
             CSI500_open[CSI500_open == 0] = np.nan                       
             self.CSI500 = CSI500.ffill().bfill()
@@ -74,14 +104,34 @@ class Backtest:
             self.Liq_top[L_mask] = (fturn * fmv)[L_mask]
     
     def TargetOn(self, Factor, scale_method=None):
+        """
+        This function can adjust dates and tickers of data and factor to
+        the same sets. And factor will be pre-scale before the backtest
+        is run.
         
+        Parameters
+        ----------
+        Factor : pandas.DataFrame, with dates as index and tickers as columns.
+        
+        scale_method : str, default None, only 'standardize' and 'normalize'
+                       can be chosen.
+        
+        Notes
+        -----
+            - Scale or not does not affect backtest
+              result, but may have some impact on some weighted
+              methods planned to update in the future.
+              
+            - If tickers and dates are not matched, the function will raise
+              a warning.
+        """
         # Input control
         if not isinstance(Factor, pd.DataFrame):
             raise TypeError('Input factor should be pandas.DataFrame.')
         
         # Save original factor score
         self.Factor = Factor
-        
+        self.Factor.index = pd.to_datetime(self.Factor.index)
         # Adjust time
         adjust_flag = False
         start_date = Factor.index[0]
@@ -116,23 +166,24 @@ class Backtest:
         elif len(cp_set2) > 0:
             warnings.warn(f'Tickers {cp_set2} in data are not in factor.')
             adjust_flag = True
-    
+        
         if adjust_flag:
-            ticker_set = sorted(list(set(Factor.columns) 
-                                     and set(self.Tickers)))
+            self.tickers = sorted(list(set(Factor.columns) 
+                                       and set(self.Tickers)))
             self.csi500 = self.CSI500[SDate:EDate].values
             self.csi500_open = self.CSI500_open[SDate:EDate].values
-            self.close = self.Close[SDate:EDate][ticker_set].values
-            self.vwap = self.VWAP[SDate:EDate][ticker_set].values
-            self.check = self.Check[SDate:EDate][ticker_set].values
-            self.mv = self.MV[SDate:EDate][ticker_set].values
-            self.cant_buy = self.CantBuy[SDate:EDate][ticker_set].values
-            self.cant_sell = self.CantSell[SDate:EDate][ticker_set].values
-            self.close_fill = self.Close_fill[SDate:EDate][ticker_set].values
-            self.liq_top = self.Liq_top[SDate:EDate][ticker_set].values
+            self.close = self.Close[SDate:EDate][self.tickers].values
+            self.vwap = self.VWAP[SDate:EDate][self.tickers].values
+            self.check = self.Check[SDate:EDate][self.tickers].values
+            self.mv = self.MV[SDate:EDate][self.tickers].values
+            self.cant_buy = self.CantBuy[SDate:EDate][self.tickers].values
+            self.cant_sell = self.CantSell[SDate:EDate][self.tickers].values
+            self.close_fill = self.Close_fill[SDate:EDate][self.tickers].values
+            self.liq_top = self.Liq_top[SDate:EDate][self.tickers].values
             self.dates = self.CSI500[SDate:EDate].index
-            factor = Factor[SDate:EDate][ticker_set]
+            factor = Factor[SDate:EDate][self.tickers]
         else:
+            self.tickers = self.Tickers
             self.csi500 = self.CSI500.values
             self.csi500_open = self.CSI500_open.values
             self.close = self.Close.values
@@ -147,16 +198,20 @@ class Backtest:
             factor = Factor.copy()
             
         # Scale input factor
-        if scale_method is None:
-            raise ValueError('Please input scale method.')
-        elif scale_method == 'standardize':
+        if scale_method == 'standardize':
             factor = factor.sub(factor.mean(axis=1),axis=0).div(
                             factor.std(axis=1), axis=0)
         elif scale_method == 'normalize':
             temp_min = factor.min(axis=1)
             factor = factor.sub(temp_min, axis=0).div(
                             factor.max(axis=1)-temp_min, axis=0)
-        
+        elif scale_method == 'linear':
+            for i in range(len(self.dates)):
+                sort_c = factor.iloc[i,:].sort_values()
+                diff = sort_c.diff()
+                d_min = diff.min()
+                new_diff = diff.sub(d_min).div(diff.max() - d_min)
+                factor.iloc[i,:] = (new_diff.cumsum())[self.tickers]
         self.factor = factor.values
     
     def Backtest(self, init_cap=100000000, mv_weighted=False, top_num=100,
@@ -164,7 +219,7 @@ class Backtest:
                  fir_recov=-0.01, sec_recov=-0.03, w_limit=None, 
                  pos_ratio=0.8, trade_complt=1, liq_limit=0.1,
                  turn_bot=0.1, cash_limit=None, commission=0.0002,
-                 stamp_duty=0.001, mngm_fee=0.0001):
+                 stamp_duty=0.001, mngm_fee=0.0001, w_method=None):
         """
         Main backtest function in this class, which has replicated the whole
         trading process.
@@ -209,6 +264,13 @@ class Backtest:
         
         mngm_fee : float, management fee rate.
         
+        w_method : str, indicating method that used for picking top stocks.
+                   If None(default), stocks whose factor scores are in top
+                   top_num will be picked. If 'lookback', stocks will be
+                   splited into 10 group according to scores quantile, stocks
+                   that are in the group performing best during last 3
+                   months will be picked.
+        
         Notes
         -----
             - For this stage, risk level can be recovered from 2 to 0. But
@@ -216,21 +278,55 @@ class Backtest:
               from trading too large volume.
             
             - The output plot is using imperfect function to plot the
-              background color, which stands for risk level that day. However,
-              the vertical lines are not quite consistent with X axis.
+              background color, which stands for risk level that day.
+              However, the vertical lines are not quite consistent with
+              X axis.
+            
+            - w_method can be designed to be many other forms, and top 
+              top_num to pick will be set to be a default setting.
         """
         res = {}
-        
-        self.factor[self.check==0] = -10
+  
+        self.factor[self.check==0] = -100
         weights = np.zeros(self.factor.shape)
-        for i in range(len(self.dates)):
-            if i < 1:
-                continue
-            top = np.argpartition(self.factor[i-1,:], -top_num)[-top_num:]
-            weights[i,top] = self.mv[i-1,top] if mv_weighted else 1
-        weights /= np.sum(weights, axis=1).reshape([-1,1])
-        weights[np.isnan(weights)] = 0
-
+        pb = ProgressBar()
+        for i in pb(range(len(self.dates))):
+            if w_method is 'lookback':
+                if i < 22 + 1:
+                    continue
+                temp_res = []
+                for j in range(22):
+                    t_res = []
+                    check_pos = np.where(self.check[i-j-2,:] == 1)[0]
+                    if len(pd.unique(self.factor[i-j-2,:][check_pos])) <= 1:
+                        t_res.append(1)
+                        continue
+                    categ = pd.qcut(self.factor[i-j-2,:][check_pos], 10,
+                                    duplicates='drop').codes
+                    for k in range(10):
+                        t_res.append(self.Ret.iloc[i-j-1,
+                                                   check_pos[categ==k]].mean())
+                    temp_res.append(t_res)
+                pick = (-np.nanprod(np.array(temp_res), axis=0)).argsort()
+                check_pos = np.where(self.check[i-1,:] == 1)[0]
+                if len(pd.unique(self.factor[i-1,:][check_pos])) <= 1:
+                    continue
+                categ = pd.qcut(self.factor[i-1,:][check_pos], 10,
+                                duplicates='drop').codes
+                if np.sum(categ == pick[0]) < top_num:
+                    pick = pick[:2]
+                else:
+                    pick = pick[0]
+                pick = check_pos[np.in1d(categ, pick)]
+            elif w_method is None:
+                if i < 1:
+                    continue
+                pick = np.argpartition(self.factor[i-1,:], -top_num)[-top_num:]
+            weights[i,pick] = self.mv[i-1,pick] if mv_weighted else 1
+        
+        weights /= np.nansum(weights, axis=1).reshape([-1,1])
+        weights = np.nan_to_num(weights)
+        self.weights = weights
         year_point = np.where(pd.Series([x.year for x in
                                          self.dates]).diff() == 1)[0]
         res['year_point'] = year_point
@@ -284,7 +380,7 @@ class Backtest:
                                   (DD[i-1] >= fir_recov)*1 +
                                   (2-risk_level[i-1])*(DD[i-1] <= sec_line))
                 
-                weight_v = weights[i,:]
+                weight_v = weights[i,:].copy()
                 liq_mask = self.liq_top[i-1,:] / (pos_ratio*aum[i-1])
                 if w_limit is not None:
                     liq_mask[~(liq_mask < w_limit)] = w_limit
@@ -304,6 +400,7 @@ class Backtest:
                     weight_v[~balance_mask] *= (remain /
                             weight_v[~balance_mask].sum() + 1)
                 weight_v /= weight_v.sum()
+                weight_v = np.nan_to_num(weight_v)
                 
                 h_last = holding[i-1,:] * self.close_fill[i-1,:]
                 h_last[np.isnan(self.close_fill[i-1,:])] = 0
@@ -372,7 +469,6 @@ class Backtest:
                 
                 # Sell
                 if np.sum(all_sell) > 0:
-#                    cansell = np.where(~np.isnan(self.vwap[i,all_sell]))[0]
                     cash[i] += (np.nansum(holding[i,all_sell] *
                                 self.vwap[i,all_sell])
                                 * (1-commission-stamp_duty))
@@ -481,7 +577,7 @@ class Backtest:
                     cash[i] -= cash_lend
                     cash_lend = 0
             
-            weight_v = weights[i,:]
+            weight_v = weights[i,:].copy()
             liq_mask = self.liq_top[i-1,:]/(pos_ratio*aum[i-1]*
                               (1-0.5*risk_level[i]))
             liq_mask[~(liq_mask < w_limit)] = w_limit
@@ -501,6 +597,7 @@ class Backtest:
                 weight_v[~balance_mask] *= (remain /
                         weight_v[~balance_mask].sum() + 1)
             weight_v /= weight_v.sum()
+            weight_v = np.nan_to_num(weight_v)
             
             h_last = holding[i-1,:] * self.close_fill[i-1,:]
             h_last[np.isnan(self.close_fill[i-1,:])] = 0
@@ -571,7 +668,6 @@ class Backtest:
             
             # Sell
             if np.sum(all_sell) > 0:
-#                cansell = np.where(~np.isnan(self.vwap[i,all_sell]))[0]
                 cash[i] += (np.nansum(holding[i,all_sell] *
                             self.vwap[i,all_sell])
                             * (1-commission-stamp_duty))
@@ -643,7 +739,6 @@ class Backtest:
         res['ret'] = np.r_[0, aum[1:]/aum[:-1] - 1]
         self.backtest_res = res
         return res 
-        
         
     @staticmethod
     def AnnRet(aum, year_point=None):
@@ -743,9 +838,32 @@ class Backtest:
         
         else:
             return np.sum(ret) / np.sum(turnover) * 1e4
-        
+    
     def Summary(self, res=None, plot=True):
+        """
+        Summarize performance of the input backtest result.
         
+        Parameters
+        ----------
+        res : result from self.Backtest, a dictionary which contains serveral
+              backtest processes.
+              
+        plot : boolean, indicating whether to plot the curve.
+        
+        Returns
+        -------
+        A pandas.DataFrame which contains following criteria within 
+        different year as well as the whole period:
+            - Annualize Return
+            - Total Return
+            - Volatility
+            - Win Rate
+            - Win Loss Ratio
+            - Maximum Drawdown
+            - Sharpe Ratio
+            - Sterling Ratio
+            - Return over turnover
+        """
         if res is None:
             res = self.backtest_res
         
@@ -779,4 +897,3 @@ class Backtest:
                               res['risk_level'][np.newaxis],
                               cmap='Reds', alpha=0.2)
         return summary
-
