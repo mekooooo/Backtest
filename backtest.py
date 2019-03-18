@@ -49,31 +49,29 @@ class Backtest:
         data_dir = './temp_data/' if temp_data else './Data/'
         self.data_dir = data_dir
         if temp_data:
-            self.Dates = pd.to_datetime([str(x[0][0]) for x in io.loadmat(
-                    f'{data_dir}date.mat').popitem()[1]])
-            self.Tickers = [str(x[0][0]) for x in io.loadmat(
-                    f'{data_dir}ticker.mat').popitem()[1]]
+            self.Dates = pd.to_datetime([str(x[0][0]) for x in io.loadmat('{}date.mat'.format(data_dir))['date']])
+
+            self.Tickers = [str(x[0][0]) for x in io.loadmat('{}ticker.mat'.format(data_dir))['ticker']]
             
             self.StartDate = self.Dates[0]
             self.EndDate = self.Dates[-1]
             
-            CSI500 = pd.Series(io.loadmat(
-                    f'{data_dir}csi500_close.mat').popitem()[1].reshape([-1]),
+            CSI500 = pd.Series(io.loadmat('{}csi500_close.mat'.format(data_dir))['hs300_c'].reshape([-1]),
                     index=self.Dates)
             CSI500_open = pd.Series(io.loadmat(
-                    f'{data_dir}csi500_open.mat').popitem()[1].reshape([-1]),
+                    '{}csi500_open.mat'.format(data_dir))['hs300_o'].reshape([-1]),
                     index=self.Dates)
             self.Close = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_close_price.mat').popitem()[1].T,
+                    '{}data_close_price.mat'.format(data_dir))['close_price'].T,
                     index=self.Dates, columns=self.Tickers)
             self.VWAP = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_vwap_price.mat').popitem()[1].T, 
+                    '{}data_vwap_price.mat'.format(data_dir))['vwap_price'].T,
                     index=self.Dates, columns=self.Tickers)
             self.Check = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_tickercheck.mat').popitem()[1].T,
+                    '{}data_tickercheck.mat'.format(data_dir))['tickercheck'].T,
                     index=self.Dates, columns=self.Tickers)
             self.MV = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_mv.mat').popitem()[1].T,
+                    '{}data_mv.mat'.format(data_dir))['mv'].T,
                     index=self.Dates, columns=self.Tickers)
             
             self.Close[self.Close == 0] = np.nan
@@ -86,18 +84,18 @@ class Backtest:
             self.CSI500_open = CSI500_open.ffill().bfill()
             
             # Go up staying & Fall staying
-            High = io.loadmat(f'{data_dir}data_high_price.mat').popitem()[1].T
-            Low = io.loadmat(f'{data_dir}data_low_price.mat').popitem()[1].T
+            High = io.loadmat('{}data_high_price.mat'.format(data_dir))['high_price'].T
+            Low = io.loadmat('{}data_low_price.mat'.format(data_dir))['low_price'].T
             cant = High == Low
             self.CantBuy = cant*(Low/self.Close_fill.shift(axis=1)-1 > 0.09)
             self.CantSell = cant*(High/self.Close_fill.shift(axis=1)-1 < -0.09)
             
             # Liquidity limit
             fturn = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_fturn.mat').popitem()[1].T / 100,
+                    '{}data_fturn.mat'.format(data_dir))['fturn'].T / 100,
                     index=self.Dates, columns=self.Tickers)
             fmv = pd.DataFrame(io.loadmat(
-                    f'{data_dir}data_fmv.mat').popitem()[1].T, 
+                    '{}data_fmv.mat'.format(data_dir))['fmv'].T,
                     index=self.Dates, columns=self.Tickers)
             self.Liq_top = (fturn * fmv).rolling(5, axis=0).mean()
             L_mask = pd.isnull(self.Liq_top)
@@ -143,16 +141,16 @@ class Backtest:
         if start_date != StartDate:
             SDate = start_date if start_date > StartDate else StartDate
             warnings.warn('Start date of input factor is ' +
-                          f'{start_date.date()}, but start date of data is ' +
-                          f'{StartDate.date()}.')
+                          '{start_date.date()}, but start date of data is ' +
+                          '{StartDate.date()}.')
             adjust_flag = True
         else:
             SDate = start_date
             
         if end_date != EndDate:
             EDate = end_date if end_date < EndDate else EndDate
-            warnings.warn(f'End date of input factor is {end_date.date()}, ' +
-                          f'but end date of data is {EndDate.date()}.')
+            warnings.warn('End date of input factor is {end_date.date()}, ' +
+                          'but end date of data is {EndDate.date()}.')
             adjust_flag = True
         else:
             EDate = end_date
@@ -161,10 +159,10 @@ class Backtest:
         cp_set1 = set(Factor.columns) - set(self.Tickers)
         cp_set2 = set(self.Tickers) - set(Factor.columns)
         if len(cp_set1) > 0:
-            warnings.warn(f'Tickers {cp_set1} in factor are not in data.')
+            warnings.warn('Tickers {cp_set1} in factor are not in data.')
             adjust_flag = True
         elif len(cp_set2) > 0:
-            warnings.warn(f'Tickers {cp_set2} in data are not in factor.')
+            warnings.warn('Tickers {cp_set2} in data are not in factor.')
             adjust_flag = True
         
         if adjust_flag:
