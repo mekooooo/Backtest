@@ -167,7 +167,7 @@ class Backtest:
         
         if adjust_flag:
             self.tickers = sorted(list(set(Factor.columns) 
-                                       and set(self.Tickers)))
+                                       & set(self.Tickers)))
             self.csi500 = self.CSI500[SDate:EDate].values
             self.csi500_open = self.CSI500_open[SDate:EDate].values
             self.close = self.Close[SDate:EDate][self.tickers].values
