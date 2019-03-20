@@ -180,6 +180,11 @@ class Backtest:
             self.liq_top = self.Liq_top[SDate:EDate][self.tickers].values
             self.dates = self.CSI500[SDate:EDate].index
             factor = Factor[SDate:EDate][self.tickers]
+
+            # Insert missing trading days in factor
+            if factor.shape[0] != len(self.dates):
+                factor = factor.reindex(self.dates)
+                
         else:
             self.tickers = self.Tickers
             self.csi500 = self.CSI500.values
