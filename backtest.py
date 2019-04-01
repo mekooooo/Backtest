@@ -8,7 +8,7 @@ Created on Thu Mar  7 16:41:42 2019
 import pandas as pd
 import numpy as np
 from scipy import io
-from progressbar import ProgressBar
+from matplotlib import pyplot as plt
 import warnings
 
 warnings.simplefilter('ignore', RuntimeWarning)
@@ -180,6 +180,10 @@ class Backtest:
             self.liq_top = self.Liq_top[SDate:EDate][self.tickers].values
             self.dates = self.CSI500[SDate:EDate].index
             factor = Factor[SDate:EDate][self.tickers]
+            # Insert missing trading days in factor
+            if factor.shape[0] != len(self.dates):
+                factor = factor.reindex(self.dates)
+                
         else:
             self.tickers = self.Tickers
             self.csi500 = self.CSI500.values
@@ -214,7 +218,7 @@ class Backtest:
     
     def Backtest(self, init_cap=100000000, mv_weighted=False, top_num=100,
                  risk_control=False, fir_line=-0.02, sec_line=-0.04,
-                 fir_recov=-0.01, sec_recov=-0.03, w_limit=None, 
+                 fir_recov=-0.01, sec_recov=-0.03, w_limit=0.05, 
                  pos_ratio=0.8, trade_complt=1, liq_limit=0.1,
                  turn_bot=0.1, cash_limit=None, commission=0.0002,
                  stamp_duty=0.001, mngm_fee=0.0001, w_method=None):
@@ -230,7 +234,8 @@ class Backtest:
                       weights. If False, the weight matrix will be initialized
                       as equally weighted.
                       
-        top_num : integer, # of stocks on top will be picked.
+        top_num : If integer, # of stocks on top will be picked. Else if float
+                  in (0, 1], top % quantile will be picked. 
         
         risk_control : boolean, whether to control risk by two drawdown line.
         
@@ -285,10 +290,19 @@ class Backtest:
         """
         res = {}
   
-        self.factor[self.check==0] = -100
+        self.factor[self.check==0] = -100.0
+        self.factor[np.isnan(self.factor)] = -100.0
+        self.factor[np.isinf(self.factor)] = -100.0
         weights = np.zeros(self.factor.shape)
-        pb = ProgressBar()
-        for i in pb(range(len(self.dates))):
+        valid_count = np.sum(self.factor > -100, axis=1)
+        top_num_use = top_num
+        for i in range(len(self.dates)):
+            if i < 1:
+                continue
+            if valid_count[i-1] < 100:
+                continue
+            if top_num <= 1:
+                top_num_use = int(top_num*valid_count[i-1])
             if w_method is 'lookback':
                 if i < 22 + 1:
                     continue
@@ -311,15 +325,14 @@ class Backtest:
                     continue
                 categ = pd.qcut(self.factor[i-1,:][check_pos], 10,
                                 duplicates='drop').codes
-                if np.sum(categ == pick[0]) < top_num:
+                if np.sum(categ == pick[0]) < top_num_use:
                     pick = pick[:2]
                 else:
                     pick = pick[0]
                 pick = check_pos[np.in1d(categ, pick)]
             elif w_method is None:
-                if i < 1:
-                    continue
-                pick = np.argpartition(self.factor[i-1,:], -top_num)[-top_num:]
+                pick = np.argpartition(self.factor[i-1,:],
+                                       -top_num_use)[-top_num_use:]
             weights[i,pick] = self.mv[i-1,pick] if mv_weighted else 1
         
         weights /= np.nansum(weights, axis=1).reshape([-1,1])
@@ -342,8 +355,7 @@ class Backtest:
             turnover = np.zeros(len(self.dates))
             cash = np.zeros(len(self.dates))
             aum = np.zeros(len(self.dates))
-            pb = ProgressBar()
-            for i in pb(range(len(self.dates))):
+            for i in range(len(self.dates)):
             
                 if i < 1:
                     f_pnl[i] = 0.0
@@ -418,6 +430,9 @@ class Backtest:
                 
                 future_holding[i] = np.round((reb_value + h_last).sum() / 
                                               self.csi500[i-1] / 200)
+                
+                # Filtering non-tradable stock today but unknown yesterday
+                reb_value[np.isnan(self.vwap[i,:])] = 0
                 
                 reb_buy = (reb_value > 0) * (h_last > 0)
                 reb_sell = (reb_value < 0) * (reb_value + h_last > 0)
@@ -549,8 +564,8 @@ class Backtest:
         turnover = np.zeros(len(self.dates))
         cash = np.zeros(len(self.dates))
         aum = np.zeros(len(self.dates))
-        pb = ProgressBar()
-        for i in pb(range(len(self.dates))):
+        temp_reb_value = []
+        for i in range(len(self.dates)):
             if i < 1:
                 f_pnl[i] = 0.0
                 p_ratio[i] = 0.0
@@ -616,6 +631,9 @@ class Backtest:
             
             future_holding[i] = np.round((reb_value + h_last).sum() / 
                                           self.csi500[i-1] / 200)
+            
+            # Filtering non-tradable stock today but unknown yesterday
+            reb_value[np.isnan(self.vwap[i,:])] = 0
             
             reb_buy = (reb_value > 0) * (h_last > 0)
             reb_sell = (reb_value < 0) * (reb_value + h_last > 0)
@@ -693,7 +711,9 @@ class Backtest:
                 cash[i] -= (np.nansum(d_all_b * 
                             self.vwap[i,all_buy]) 
                             * (1+commission))
-        
+            
+            temp_reb_value.append(reb_value)
+            
             d_f = future_holding[i] - future_holding[i-1]
             f_dly_pnl = (200*d_f*((self.csi500_open[i]
                          - self.csi500[i])/2)) + (200*future_holding[i-1]
@@ -735,6 +755,10 @@ class Backtest:
         res['f_holding'] = future_holding
         res['drawdown'] = DD
         res['ret'] = np.r_[0, aum[1:]/aum[:-1] - 1]
+        res['holding'] = holding
+        res['reb_value'] = np.array(temp_reb_value)
+        res['dd_dates'] = [str(x.date())
+                           for x in self.dates[res['ret'] < -0.01]]
         self.backtest_res = res
         return res 
         
@@ -823,6 +847,19 @@ class Backtest:
             return np.min(drawdown)
     
     @staticmethod
+    def Turnover(turnover, year_point=None):
+        if year_point is not None:
+            y_point = np.r_[0, year_point, len(turnover)]
+            res = []
+            for i in range(len(y_point)-1):
+                temp_to = turnover[y_point[i]:y_point[i+1]]
+                res.append(np.mean(temp_to[temp_to > 0]))
+            res.append(np.mean(turnover[turnover > 0]))
+            return np.array(res)
+        else:
+            return np.np.mean(turnover[turnover > 0])
+    
+    @staticmethod
     def ROT(ret, turnover, year_point=None):
         if year_point is not None:
             y_point = np.r_[0, year_point, len(ret)]
@@ -872,22 +909,26 @@ class Backtest:
         win_rate = self.WinRate(res['ret'], year_point)
         win_loss = self.WinLossRatio(res['ret'], year_point)
         max_dd = self.MaxDrawDown(res['drawdown'], year_point)
+        turnover = self.Turnover(res['turnover'], year_point)
         sharpe_r = ann_ret / vol
         sterling = ann_ret / -max_dd
         rot = self.ROT(res['ret'], res['turnover'], year_point)
         
         index_l = [x.year for x in self.dates[np.r_[0,year_point]]]+['Overall']
         col_l = ['AnnualReturn', 'TotalReturn', 'Volatility', 'WinRate',
-                 'Win/Loss', 'MaxDrawDown', 'SharpeRatio', 'SterlingRatio',
-                 'Return/Turnover']
+                 'Win/Loss', 'MaxDrawDown', 'Turnover', 'SharpeRatio',
+                 'SterlingRatio', 'Return/Turnover']
         summary = pd.DataFrame(np.c_[ann_ret, tot_ret, vol, win_rate,
-                                     win_loss, max_dd, sharpe_r, sterling,
-                                     rot],
+                                     win_loss, max_dd, turnover, sharpe_r,
+                                     sterling, rot],
                                index=index_l, columns=col_l)
         
         if plot:
             NAV = pd.Series(res['aum'],index=pd.to_datetime(self.dates))
+            dd_dates = pd.to_datetime(res['dd_dates'])
             (NAV / NAV[0]).plot()
+            for i in range(len(dd_dates)):
+                plt.axvline(dd_dates[i], ls=':', c='k', alpha=0.5)
             if 'risk_level' in res:
                 rNAV = pd.Series(res['r_aum'],index=pd.to_datetime(self.dates))
                 ax = (rNAV / rNAV[0]).plot()
