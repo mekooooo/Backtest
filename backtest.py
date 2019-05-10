@@ -7,11 +7,45 @@ Created on Thu Mar  7 16:41:42 2019
 
 import pandas as pd
 import numpy as np
-from scipy import io
+import h5py
 from matplotlib import pyplot as plt
+from progressbar import ProgressBar
+import io
 import warnings
 
 warnings.simplefilter('ignore', RuntimeWarning)
+
+temp_dir = './temp_data/'
+data_dir = '//share/Data/'
+h5_dir = '{}//'.format(data_dir)
+
+def to_hdf(data, fname, key, string=False):
+    h5 = h5py.File(fname, 'a')
+    if key in list(h5.keys()):
+        del h5[key]
+    if string:
+        h5.create_dataset(key, data=np.array(np.array(data,
+                                                      dtype=np.dtype(str)), 
+    dtype=h5py.special_dtype(vlen=str)), dtype=h5py.special_dtype(vlen=str))
+    else:
+        h5.create_dataset(key, data=data)
+    h5.close()
+
+def to_hdf_df(df, fname, key, string=False):
+    to_hdf(df, fname, key, string=string)
+    to_hdf(df.index, fname, 'Dates', string=True)
+    to_hdf(df.columns, fname, 'Tickers', string=True)
+
+def from_hdf(fname, key):
+    h5 = h5py.File(fname, 'r')
+    data = h5[key].value
+    h5.close()
+    return data
+
+def from_hdf_df(fname, key):
+    return pd.DataFrame(from_hdf(fname, key),
+                        index=pd.to_datetime(from_hdf(fname, 'Dates')),
+                        columns=from_hdf(fname, 'Tickers'))
 
 class Backtest:
     
@@ -46,8 +80,9 @@ class Backtest:
             - The Check matrix can prevent the factor from buying low value
               stocks.
         """
-        data_dir = './temp_data/' if temp_data else './Data/'
+        data_dir = temp_dir if temp_data else h5_dir
         self.data_dir = data_dir
+        
         if temp_data:
             self.Dates = pd.to_datetime([str(x[0][0]) for x in io.loadmat('{}date.mat'.format(data_dir))['date']])
 
@@ -100,6 +135,78 @@ class Backtest:
             self.Liq_top = (fturn * fmv).rolling(5, axis=0).mean()
             L_mask = pd.isnull(self.Liq_top)
             self.Liq_top[L_mask] = (fturn * fmv)[L_mask]
+            
+        else:
+            self.Dates = pd.to_datetime(from_hdf('{}/Close.h5'.format(data_dir),
+                                                 'Dates'))
+
+            self.Tickers = from_hdf('{}/Close.h5'.format(data_dir), 'Tickers')
+            
+            self.StartDate = self.Dates[0]
+            self.EndDate = self.Dates[-1]
+            
+            CSI500 = pd.Series(from_hdf('{}/CSI500.h5'.format(data_dir),
+                                        'Close'),
+                               index=pd.to_datetime(from_hdf(
+                               '{}/CSI500.h5'.format(data_dir), 'Dates')))
+            CSI500_open = pd.Series(from_hdf('{}/CSI500.h5'.format(data_dir),
+                                             'Open'),
+                                    index=pd.to_datetime(from_hdf(
+                                    '{}/CSI500.h5'.format(data_dir), 'Dates')))
+            self.Close = from_hdf_df('{}/Close.h5'.format(data_dir), 'Forward')
+            self.VWAP = from_hdf_df('{}/VWAP.h5'.format(data_dir), 'Forward')
+            
+            # Check
+            self.Check = from_hdf_df('{}/Check.h5'.format(data_dir), 'Check')
+            
+            self.MV = from_hdf_df('{}/MV.h5'.format(data_dir), 'Raw')
+            
+            self.Close[self.Close == 0] = np.nan
+            self.VWAP[self.VWAP == 0] = np.nan
+            self.Close_fill = self.Close.ffill(axis=0)
+            self.Ret = self.Close_fill/self.Close_fill.shift(axis=0)
+            CSI500[CSI500 == 0] = np.nan
+            CSI500_open[CSI500_open == 0] = np.nan                       
+            self.CSI500 = CSI500.ffill().bfill()
+            self.CSI500_open = CSI500_open.ffill().bfill()
+            
+            self.Tickers = np.array(sorted(list(set(self.Close.columns) &
+                                                set(self.MV.columns))))
+            
+            # Go up staying & Fall staying
+            High = from_hdf('{}/High.h5'.format(data_dir), 'Forward')
+            Low = from_hdf('{}/Low.h5'.format(data_dir), 'Forward')
+            cant = High == Low
+            self.CantBuy = cant*(Low/self.Close_fill.shift(axis=0)-1 > 0.09)
+            self.CantSell = cant*(High/self.Close_fill.shift(axis=0)-1 < -0.09)
+            
+            # Liquidity limit
+            fturn = from_hdf_df('{}/fTurnover.h5'.format(data_dir), 'Raw') / 100.0
+            fmv = from_hdf_df('{}/fMV.h5'.format(data_dir), 'Raw')
+            
+            self.Liq_top = (fturn * fmv).rolling(5, axis=0).mean()
+            L_mask = pd.isnull(self.Liq_top)
+            self.Liq_top[L_mask] = (fturn * fmv)[L_mask]
+            
+            if self.StartDate < self.CSI500.index[0]:
+                self.StartDate = self.CSI500.index[0]
+                
+            if self.EndDate > self.CSI500.index[-1]:
+                self.EndDate = self.CSI500.index[-1]
+                
+            self.Members = {'CSI300': {},
+                            'CSI500': {},
+                            'CSI1000': {}}
+            
+            for t_index in ['CSI300', 'CSI500', 'CSI1000']:
+                t_file = h5py.File('{}/{}_Member.h5'.format(data_dir,
+                                   t_index), 'r')
+                keys = list(t_file.keys())
+                t_file.close()
+                for key in keys:
+                    self.Members[t_index][key] = from_hdf(
+                            '{}/{}_Member.h5'.format(data_dir, t_index), key)
+
     
     def TargetOn(self, Factor, scale_method=None):
         """
@@ -221,7 +328,8 @@ class Backtest:
                  fir_recov=-0.01, sec_recov=-0.03, w_limit=0.05, 
                  pos_ratio=0.8, trade_complt=1, liq_limit=0.1,
                  turn_bot=0.1, cash_limit=None, commission=0.0002,
-                 stamp_duty=0.001, mngm_fee=0.0001, w_method=None):
+                 stamp_duty=0.001, mngm_fee=0.0001, w_method=None,
+                 index_member=True):
         """
         Main backtest function in this class, which has replicated the whole
         trading process.
@@ -274,6 +382,9 @@ class Backtest:
                    that are in the group performing best during last 3
                    months will be picked.
         
+        index_member : boolean, whether pick stocks from index including
+                       CSI300, CSI500 and CSI1000.
+        
         Notes
         -----
             - For this stage, risk level can be recovered from 2 to 0. But
@@ -289,14 +400,15 @@ class Backtest:
               top_num to pick will be set to be a default setting.
         """
         res = {}
-  
-        self.factor[self.check==0] = -100.0
-        self.factor[np.isnan(self.factor)] = -100.0
-        self.factor[np.isinf(self.factor)] = -100.0
+        fill_value = -100
+        self.factor[self.check==1] = fill_value
+        self.factor[np.isnan(self.factor)] = fill_value
+        self.factor[np.isinf(self.factor)] = fill_value
         weights = np.zeros(self.factor.shape)
-        valid_count = np.sum(self.factor > -100, axis=1)
+        valid_count = np.sum(self.factor > fill_value, axis=1)
         top_num_use = top_num
-        for i in range(len(self.dates)):
+        pb = ProgressBar()
+        for i in pb(range(len(self.dates))):
             if i < 1:
                 continue
             if valid_count[i-1] < 100:
@@ -331,9 +443,36 @@ class Backtest:
                     pick = pick[0]
                 pick = check_pos[np.in1d(categ, pick)]
             elif w_method is None:
-                pick = np.argpartition(self.factor[i-1,:],
-                                       -top_num_use)[-top_num_use:]
-            weights[i,pick] = self.mv[i-1,pick] if mv_weighted else 1
+                if not index_member:
+                    pick = np.argpartition(self.factor[i-1,:],
+                                           -top_num_use)[-top_num_use:]
+                else:
+                    t_dates = str(int(self.dates[i-1].year*100+self.dates[i-1].month))
+                    scanned = []
+                    pick = []
+                    total_r = 1
+                    im = 'CSI300'
+                    if t_dates in self.Members[im]:
+                        i_pos = [self.tickers.index(x) for x in self.Members[im][t_dates] if x in self.tickers]
+                        pick_num = int(top_num_use*0.4)
+                        t_pick = np.argpartition(self.factor[i-1, i_pos], -pick_num)[-pick_num:]
+                        pick += np.array(i_pos)[t_pick].tolist()
+                        scanned += i_pos
+                        total_r -= 0.4
+                    im = 'CSI500'
+                    if t_dates in self.Members[im]:
+                        i_pos = [self.tickers.index(x) for x in self.Members[im][t_dates] if x in self.tickers]
+                        pick_num = int(top_num_use*0.3)
+                        t_pick = np.argpartition(self.factor[i-1, i_pos], -pick_num)[-pick_num:]
+                        pick += np.array(i_pos)[t_pick].tolist()
+                        scanned += i_pos
+                        total_r -= 0.3
+                    i_pos = list(set(range(len(self.tickers))) - set(scanned))
+                    pick_num = int(top_num_use*total_r)
+                    t_pick = np.argpartition(self.factor[i-1, i_pos], -pick_num)[-pick_num:]
+                    pick += np.array(i_pos)[t_pick].tolist()
+
+            weights[i,pick] = np.sqrt(self.mv[i-1,pick]) if mv_weighted else 1
         
         weights /= np.nansum(weights, axis=1).reshape([-1,1])
         weights = np.nan_to_num(weights)
