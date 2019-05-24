@@ -5,7 +5,6 @@ Created on Mon May  6 18:06:18 2019
 @author: vmuser20
 """
 
-
 import pandas as pd
 import numpy as np
 import h5py
@@ -16,9 +15,9 @@ import warnings
 
 warnings.simplefilter('ignore', RuntimeWarning)
 
-temp_dir = './temp_data/'
-data_dir = '//192.168.201.202/share/Data/'
-h5_dir = '{}/Wind/'.format(data_dir)
+temp_dir = './/'
+data_dir = '//'
+h5_dir = '{}//'.format(data_dir)
 
 def to_hdf(data, fname, key, string=False):
     h5 = h5py.File(fname, 'a')
@@ -363,8 +362,7 @@ class Backtest:
                  fir_recov=-0.01, sec_recov=-0.03, w_limit=0.05, 
                  pos_ratio=0.8, trade_complt=1, liq_limit=0.1,
                  turn_bot=0.1, cash_limit=None, commission=0.0002,
-                 stamp_duty=0.001, mngm_fee=0.0001, w_method=None,
-                 index_member=True):
+                 stamp_duty=0.001, mngm_fee=0.0001, w_method=None):
         """
         Main backtest function in this class, which has replicated the whole
         trading process.
@@ -417,8 +415,6 @@ class Backtest:
                    that are in the group performing best during last 3
                    months will be picked.
         
-        index_member : boolean, whether pick stocks from index including
-                       CSI300, CSI500 and CSI1000.
         
         Notes
         -----
@@ -481,54 +477,55 @@ class Backtest:
                 t_dates = str(int(self.dates[i-1].year*100+self.dates[i-1].month))
                 pick = []
                 ind_dict = {}
-                idx_dict = {}
-                idx_dict['CSI300'] = 0
-                idx_dict['CSI500'] = 0
+                cnt_300 = 0
+                cnt_500 = 0
                 num_300 = int(top_num_use * 0.4)
                 num_500 = int(top_num_use * 0.3)
+                memb_300 = self.Members['CSI300']
+                memb_500 = self.Members['CSI500']
                 temp_Ind = self.Industry.loc[self.dates[i]]
                 for tic in np.array(self.tickers)[np.argsort(-self.factor[i-1,:])]:
-                    if (len(pick) > top_num_use) or (idx_dict['CSI300'] > num_300) or (idx_dict['CSI500'] > num_500):
+                    if (len(pick) > top_num_use) or (cnt_300 > num_300) or (cnt_500 > num_500):
                         break
                     ind_flag = False
                     index_flag = False
                     # industry
                     if tic not in temp_Ind.index:
                         if ind_dict['None'] < 5:
-                            if t_dates in self.Members['CSI300']:
-                                if tic in self.Members['CSI300'][t_dates]:
-                                    idx_dict['CSI300'] += 1
+                            if t_dates in memb_300:
+                                if tic in memb_300[t_dates]:
+                                    cnt_300 += 1
                                     index_flag = True
                             
-                            if t_dates in self.Members['CSI500']:
-                                if tic in self.Members['CSI500'][t_dates]:
-                                    idx_dict['CSI500'] += 1
+                            if t_dates in memb_500:
+                                if tic in memb_500[t_dates]:
+                                    cnt_500 += 1
                                     index_flag = True
                             if index_flag:
                                 ind_flag = True
                     else:
                         if temp_Ind[tic] not in ind_dict:
                             ind_dict[temp_Ind[tic]] = 0
-                            if t_dates in self.Members['CSI300']:
-                                if tic in self.Members['CSI300'][t_dates]:
-                                    idx_dict['CSI300'] += 1
+                            if t_dates in memb_300:
+                                if tic in memb_300[t_dates]:
+                                    cnt_300 += 1
                                     index_flag = True
                             
-                            if t_dates in self.Members['CSI500']:
-                                if tic in self.Members['CSI500'][t_dates]:
-                                    idx_dict['CSI500'] += 1
+                            if t_dates in memb_500:
+                                if tic in memb_500[t_dates]:
+                                    cnt_500 += 1
                                     index_flag = True
                             if index_flag:
                                 ind_flag = True
                         if ind_dict[temp_Ind[tic]] < 5:
-                            if t_dates in self.Members['CSI300']:
-                                if tic in self.Members['CSI300'][t_dates]:
-                                    idx_dict['CSI300'] += 1
+                            if t_dates in memb_300:
+                                if tic in memb_300[t_dates]:
+                                    cnt_300 += 1
                                     index_flag = True
                             
-                            if t_dates in self.Members['CSI500']:
-                                if tic in self.Members['CSI500'][t_dates]:
-                                    idx_dict['CSI500'] += 1
+                            if t_dates in memb_500:
+                                if tic in memb_500[t_dates]:
+                                    cnt_500 += 1
                                     index_flag = True
                             if index_flag:
                                 ind_flag = True
@@ -563,53 +560,54 @@ class Backtest:
                         ind_dict[temp_Ind[tic]] += 1
                         pick.append(tic_pos)
                         
-            elif w_method is None:
+            elif w_method is 'index':
                 pick = np.argpartition(self.factor[i-1,:],
                                        -top_num_use)[-top_num_use:]
-                if index_member:
-                    pick_num = int(top_num_use*0.3)
-                    t_dates = str(int(self.dates[i-1].year*100+self.dates[i-1].month))
+                pick_num = int(top_num_use*0.3)
+                t_dates = str(int(self.dates[i-1].year*100+self.dates[i-1].month))
+                im = 'CSI300'
+                flag = False
+                if t_dates in self.Members[im]:
+                    temp_memb = self.Members[im][t_dates]
+                    flag = len(set(temp_memb) & set(pick)) < int(top_num_use*0.4)
+                im = 'CSI500'
+                if t_dates in self.Members[im]:
+                    temp_memb = self.Members[im][t_dates]
+                    flag = len(set(temp_memb) & set(pick)) < pick_num
+
+                if flag:
+                    scanned = []
+                    pick = []
+                    total_r = 1
                     im = 'CSI300'
-                    flag = False
                     if t_dates in self.Members[im]:
-                        temp_memb = self.Members[im][t_dates]
-                        flag = len(set(temp_memb) & set(pick)) < int(top_num_use*0.4)
+                        i_pos = [self.tickers.index(x) for x in 
+                                 self.Members[im][t_dates]
+                                 if x in self.tickers]
+                        t_pick = np.argpartition(self.factor[i-1, i_pos],
+                                                 -int(top_num_use*0.4))[-int(top_num_use*0.4):]
+                        pick += np.array(i_pos)[t_pick].tolist()
+                        scanned += i_pos
+                        total_r -= 0.4
                     im = 'CSI500'
                     if t_dates in self.Members[im]:
-                        temp_memb = self.Members[im][t_dates]
-                        flag = len(set(temp_memb) & set(pick)) < pick_num
-
-                    if flag:
-                        scanned = []
-                        pick = []
-                        total_r = 1
-                        im = 'CSI300'
-                        if t_dates in self.Members[im]:
-                            i_pos = [self.tickers.index(x) for x in 
-                                     self.Members[im][t_dates]
-                                     if x in self.tickers]
-                            t_pick = np.argpartition(self.factor[i-1, i_pos],
-                                                     -int(top_num_use*0.4))[-int(top_num_use*0.4):]
-                            pick += np.array(i_pos)[t_pick].tolist()
-                            scanned += i_pos
-                            total_r -= 0.4
-                        im = 'CSI500'
-                        if t_dates in self.Members[im]:
-                            i_pos = [self.tickers.index(x) for x in
-                                     self.Members[im][t_dates] 
-                                     if x in self.tickers]
-                            t_pick = np.argpartition(self.factor[i-1, i_pos],
-                                                     -pick_num)[-pick_num:]
-                            pick += np.array(i_pos)[t_pick].tolist()
-                            scanned += i_pos
-                            total_r -= 0.3
-                        i_pos = list(set(range(len(self.tickers))) - 
-                                     set(scanned))
-                        pick_num = int(top_num_use*total_r)
-                        t_pick = np.argpartition(self.factor[i-1, i_pos], 
+                        i_pos = [self.tickers.index(x) for x in
+                                 self.Members[im][t_dates] 
+                                 if x in self.tickers]
+                        t_pick = np.argpartition(self.factor[i-1, i_pos],
                                                  -pick_num)[-pick_num:]
                         pick += np.array(i_pos)[t_pick].tolist()
-                
+                        scanned += i_pos
+                        total_r -= 0.3
+                    i_pos = list(set(range(len(self.tickers))) - 
+                                 set(scanned))
+                    pick_num = int(top_num_use*total_r)
+                    t_pick = np.argpartition(self.factor[i-1, i_pos], 
+                                             -pick_num)[-pick_num:]
+                    pick += np.array(i_pos)[t_pick].tolist()
+            else:
+                pick = np.argpartition(self.factor[i-1,:],
+                                       -top_num_use)[-top_num_use:]
             weights[i,pick] = np.sqrt(self.mv[i-1,pick]) if mv_weighted else 1
         
         weights /= np.nansum(weights, axis=1).reshape([-1,1])
